@@ -1,0 +1,5 @@
+id,name,type,details
+1,CNN,Neural Network,Convolutional Neural Network for image processing
+2,Decision Tree,Tree,Tree-based model for classification
+3,Transformer,Neural Network,Advanced model for language tasks
+4,Markov Chain,Probabilistic,Statistical model for sequences
