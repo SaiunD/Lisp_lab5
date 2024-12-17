@@ -113,53 +113,39 @@
               (setf start (1+ i))))))
     (nreverse result)))
 
-(defun read-projects-table (filename)
-  "Зчитує таблицю з файлу і повертає список структур PROJECT."
-  (let ((projects '()))
+(defun read-table (filename make-record-fn)
+  "Загальна функція зчитування таблиць. 
+FILENAME - ім'я файлу, MAKE-RECORD-FN - функція для створення записів."
+  (let ((records '()))
     (with-open-file (stream filename :direction :input)
-      (read-line stream)
+      (read-line stream) ;; Пропускаємо заголовок
       (loop for line = (read-line stream nil nil)
             while line
-            do (let* ((fields (split-string-custom line #\,))
-                      (id (parse-integer (nth 0 fields))) 
-                      (name (string-trim '(#\Space) (nth 1 fields)))
-                      (ai-model-id (parse-integer (string-trim '(#\Space) (nth 2 fields)))) 
-                      (description (string-trim '(#\Space) (nth 3 fields)))) 
-                 (push (make-project :id id
-                                     :name name
-                                     :ai-model-id ai-model-id
-                                     :description description)
-                       projects))))
-    (nreverse projects)))
+            do (push (funcall make-record-fn (split-string-custom line #\,)) records)))
+    (nreverse records)))
+
+(defun read-projects-table (filename)
+  "Зчитує таблицю з файлу і повертає список структур PROJECT."
+  (read-table filename #'make-project-from-list))
 
 (defun read-ai-models-table (filename)
   "Зчитує таблицю з файлу і повертає список структур AI-MODEL."
-  (let ((ai-models '()))
-    (with-open-file (stream filename :direction :input)
-      (read-line stream)
-      (loop for line = (read-line stream nil nil)
-            while line
-            do (let* ((fields (split-string-custom line #\,))
-                      (id (parse-integer (nth 0 fields))) 
-                      (name (string-trim '(#\Space) (nth 1 fields))) 
-                      (type (string-trim '(#\Space) (nth 2 fields))) 
-                      (details (string-trim '(#\Space) (nth 3 fields))))
-                 (push (make-ai-model :id id
-                                      :name name
-                                      :type type
-                                      :details details)
-                       ai-models))))
-    (nreverse ai-models)))
+  (read-table filename #'make-ai-model-from-list))
+
 
 ;;; --- Функція SELECT ---
 
-(defun select (filename filter-fn)
-  "Зчитує таблицю з файлу, а потім повертає лямбда-вираз для фільтрації записів за допомогою FILTER-FN."
-  (lambda ()
-    (let ((records (if (search "projects.csv" filename)
-                       (read-projects-table filename)
-                       (read-ai-models-table filename))))
-      (remove-if-not filter-fn records))))
+(defun select (filename table-reader)
+  "Зчитує дані з файлу FILENAME за допомогою TABLE-READER і повертає лямбда-функцію для фільтрації структур за ключовими параметрами."
+  (let ((records (funcall table-reader filename)))
+    (lambda (&rest filters)
+      (remove-if-not
+       (lambda (record)
+         (loop for (key value) on filters by #'cddr
+               always (equal value
+                             (slot-value record
+                                         (intern (symbol-name key) *package*)))))
+       records))))
 
 ;;; --- Конвертація записів ---
 
@@ -190,7 +176,7 @@
 "Перетворює список структур AI-MODEL у список геш-таблиць."
   (mapcar #'ai-model-to-hashtable ai-models))
 
-;;; --- Утиліти для виводу ---
+;;; --- Утиліта для виводу ---
 
 (defun print-projects-table (projects)
   "Виводить таблицю проектів."
@@ -220,7 +206,6 @@
   (format t "~A~%" (make-string 108 :initial-element #\-))
   (format t "~%"))
 
-
 ;;; --- Запис у файл ---
 
 (defun write-projects-to-csv (file-path records &optional write-headers)
@@ -236,7 +221,6 @@ WRITE-HEADERS - якщо T, додає заголовки до CSV."
               (project-ai-model-id record)
               (project-description record)))))
 
-
 (defun write-ai-models-to-csv (file-path records &optional write-headers)
   "Записує список структур AI-MODEL у файл CSV.
 WRITE-HEADERS - якщо T, додає заголовки до CSV."
@@ -250,7 +234,6 @@ WRITE-HEADERS - якщо T, додає заголовки до CSV."
               (ai-model-type record)
               (ai-model-details record)))))
 ```
-
 ### Тестові набори та утиліти
 ```lisp
 ;;; --- Тестові утиліти ---
@@ -267,40 +250,31 @@ WRITE-HEADERS - якщо T, додає заголовки до CSV."
     (dolist (ai-model ai-models)
       (print ai-model))))
 
-
 (defun test-select ()
-  "Тестує функцію SELECT з умовами фільтрації."
+  "Тестує функцію SELECT з ключовими параметрами."
   (let* ((projects-file "projects/lab5/projects.csv")
          (ai-models-file "projects/lab5/ai_models.csv")
-         (filter-projects (select projects-file
-                                  (lambda (project)
-                                    (= (project-ai-model-id project) 2))))
-         (filter-ai-models (select ai-models-file
-                                   (lambda (ai-model)
-                                     (string= (ai-model-type ai-model) "Neural Network")))))
+         (filter-projects (select projects-file #'read-projects-table))
+         (filter-ai-models (select ai-models-file #'read-ai-models-table)))
     
     (format t "~&--- Filtered Projects (AI Model ID = 2) ---~%")
-    (dolist (project (funcall filter-projects))
+    (dolist (project (funcall filter-projects :ai-model-id 2))
       (print project))
 
+    (format t "~&~%")
     (format t "~&--- Filtered AI Models (Type = Neural Network) ---~%")
-    (dolist (ai-model (funcall filter-ai-models))
+    (dolist (ai-model (funcall filter-ai-models :type "Neural Network"))
       (print ai-model))))
-
 
 (defun test-write-to-csv ()
   "Тестує функції запису даних у CSV для проектів та моделей AI."
   (let* ((projects-file "projects/lab5/projects_output.csv")
          (ai-models-file "projects/lab5/ai_models_output.csv")
-         (filter-projects (select "projects/lab5/projects.csv"
-                                  (lambda (project)
-                                    (= (project-ai-model-id project) 2))))
-         (filter-ai-models (select "projects/lab5/ai_models.csv"
-                                   (lambda (ai-model)
-                                     (string= (ai-model-type ai-model) "Neural Network")))))
+         (filter-projects (select projects-file #'read-projects-table))
+         (filter-ai-models (select ai-models-file #'read-ai-models-table)))
 
-    (write-projects-to-csv projects-file (funcall filter-projects) t)
-    (write-ai-models-to-csv ai-models-file (funcall filter-ai-models) t)
+    (write-projects-to-csv projects-file (funcall filter-projects :ai-model-id 2) t)
+    (write-ai-models-to-csv ai-models-file (funcall filter-ai-models :type "Neural Network") t)
     
     ;; Перевірка: виводимо вміст записаних файлів
     (format t "~&--- Written Projects CSV ---~%")
@@ -308,18 +282,18 @@ WRITE-HEADERS - якщо T, додає заголовки до CSV."
       (loop for line = (read-line stream nil)
             while line
             do (format t "~A~%" line)))
-    
+
+    (format t "~&~%")
     (format t "~&--- Written AI Models CSV ---~%")
     (with-open-file (stream ai-models-file :direction :input)
       (loop for line = (read-line stream nil)
             while line
             do (format t "~A~%" line)))))
 
-
 (defun test-transform-to-hash ()
   "Тестує перетворення даних проектів та AI-моделей у геш-таблиці."
   (format t "~&---  Projects ---~%")
-  (let* ((projects (select "projects/lab5/projects.csv" #'identity))
+  (let* ((projects (select "projects/lab5/projects.csv" #'read-projects-table))
          (hashtables (convert-projects-to-hashtables (funcall projects))))
     (dolist (ht hashtables)
       (maphash (lambda (key value) 
@@ -328,7 +302,7 @@ WRITE-HEADERS - якщо T, додає заголовки до CSV."
 
   (format t "~&~%")
   (format t "~&---  AI-models ---~%")
-  (let* ((ai-models (select "projects/lab5/ai_models.csv" #'identity))
+  (let* ((ai-models (select "projects/lab5/ai_models.csv" #'read-ai-models-table))
          (hashtables (convert-ai-models-to-hashtables (funcall ai-models))))
     (dolist (ht hashtables)
       (maphash (lambda (key value) 
@@ -336,20 +310,25 @@ WRITE-HEADERS - якщо T, додає заголовки до CSV."
                ht))))
 
 (defun test-print ()
+  "Тестує фільтрацію проектів і моделей AI із використанням функції `select`."
   (let* ((projects-file "projects/lab5/projects.csv")
          (ai-models-file "projects/lab5/ai_models.csv")
-         (filter-projects (select projects-file
-                                  (lambda (project)
-                                    (> (project-id project) 1))))
-         (filter-ai-models (select ai-models-file
-                                   (lambda (ai-model)
-                                     (string= (ai-model-name ai-model) "CNN")))))
+         
+         ;; Отримуємо лямбда-функції фільтрації для обох файлів
+         (filter-projects (select projects-file #'read-projects-table))
+         (filter-ai-models (select ai-models-file #'read-ai-models-table))
+         
+         ;; Фільтруємо дані
+         (filtered-projects (funcall filter-projects :id 1))
+         (filtered-ai-models (funcall filter-ai-models :name "CNN" )))
     
-    (format t "~&--- Filtered Projects (ID > 1) ---~%")
-    (print-projects-table (funcall filter-projects))
+    ;; Вивід відфільтрованих проектів
+    (format t "~&--- Filtered Projects (ID = 1) ---~%")
+    (print-projects-table filtered-projects)
 
+    ;; Вивід відфільтрованих моделей AI
     (format t "~&--- Filtered AI Models (Name = CNN) ---~%")
-    (print-ai-models-table (funcall filter-ai-models))))
+    (print-ai-models-table filtered-ai-models)))
 
 ;;; --- Тестування ---
 
@@ -368,7 +347,11 @@ WRITE-HEADERS - якщо T, додає заголовки до CSV."
   (format t "~&~%")
   (format t "~&4) -------> TEST-PRINT~%")
   (format t "~&~%")
-  (test-print))
+  (test-print)
+  (format t "~&~%")
+  (format t "~&5) -------> TEST-TRANSFORM-TO-HASHTABLES~%")
+  (format t "~&~%")
+  (test-transform-to-hash))
 ```
 
 ### Тестування
@@ -435,6 +418,7 @@ CL-USER> (test-full)
    :AI-MODEL-ID 2
    :DESCRIPTION "System for medical diagnostics
 ") 
+
 --- Filtered AI Models (Type = Neural Network) ---
 
 #S(AI-MODEL
@@ -456,21 +440,23 @@ CL-USER> (test-full)
 ID,Name,AI Model ID,Description
 1,AI for Healthcare,2,System for medical diagnostics
 
+
 --- Written AI Models CSV ---
 ID,Name,Type,Details
 1,CNN,Neural Network,Convolutional Neural Network for image processing
+
 3,Transformer,Neural Network,Advanced model for language tasks
 
 
 4) -------> TEST-PRINT
 
---- Filtered Projects (ID > 1) ---
+--- Filtered Projects (ID = 1) ---
 
 -------------------------------------------------------------------------------------------------------
 | ID    | Name                    | AI Model ID  | Description                                        |
 -------------------------------------------------------------------------------------------------------
-| 2     | Autonomous Vehicles     | 3            | Self-driving car algorithms                        |
-| 3     | NLP Chatbot             | 4            | Conversational AI for customer support             |
+| 1     | AI for Healthcare       | 2            | System for medical diagnostics
+                    |
 -------------------------------------------------------------------------------------------------------
 
 --- Filtered AI Models (Name = CNN) ---
@@ -478,8 +464,50 @@ ID,Name,Type,Details
 ------------------------------------------------------------------------------------------------------------
 | ID    | Name                 | Type                 | Details                                            |
 ------------------------------------------------------------------------------------------------------------
-| 1     | CNN                  | Neural Network       | Convolutional Neural Network for image processing  |
+| 1     | CNN                  | Neural Network       | Convolutional Neural Network for image processing
+ |
 ------------------------------------------------------------------------------------------------------------
+
+
+5) -------> TEST-TRANSFORM-TO-HASHTABLES
+
+---  Projects ---
+ID: 1
+NAME: AI for Healthcare
+AI-MODEL-ID: 2
+DESCRIPTION: System for medical diagnostics
+
+ID: 2
+NAME: Autonomous Vehicles
+AI-MODEL-ID: 3
+DESCRIPTION: Self-driving car algorithms
+
+ID: 3
+NAME: NLP Chatbot
+AI-MODEL-ID: 4
+DESCRIPTION: Conversational AI for customer support
+
+
+---  AI-models ---
+ID: 1
+NAME: CNN
+TYPE: Neural Network
+DETAILS: Convolutional Neural Network for image processing
+
+ID: 2
+NAME: Decision Tree
+TYPE: Tree
+DETAILS: Tree-based model for classification
+
+ID: 3
+NAME: Transformer
+TYPE: Neural Network
+DETAILS: Advanced model for language tasks
+
+ID: 4
+NAME: Markov Chain
+TYPE: Probabilistic
+DETAILS: Statistical model for sequences
 
 NIL
 ```
